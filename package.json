@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "check": "node src/check.js",
     "snipe": "node src/snipe.js"
   },
   "dependencies": {
