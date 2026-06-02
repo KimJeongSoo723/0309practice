@@ -88,6 +88,26 @@ async function isContract(addr) {
   return result;
 }
 
+// --- 컨트랙트가 처음 배포된 블록을 이진 탐색으로 찾기 (archive 노드 필요) ---
+// getCode(token, block) 가 '0x' 가 아니게 되는 첫 블록 = 생성 블록.
+async function findCreationBlock(latest) {
+  const codeAt = async (b) => {
+    try { return (await provider.getCode(TOKEN, b)) !== '0x'; }
+    catch { return null; } // 과거 상태 조회 불가(non-archive) => null
+  };
+  if ((await codeAt('latest')) !== true) return null; // 토큰이 컨트랙트가 아님
+  const early = await codeAt(1);
+  if (early === null) { console.warn('  ! RPC가 과거 상태를 못 줌(archive 아님) → 자동탐지 불가'); return null; }
+  let lo = 1, hi = latest;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const exists = await codeAt(mid);
+    if (exists === null) return null; // 중간에 archive 한계
+    if (exists) hi = mid; else lo = mid + 1;
+  }
+  return lo;
+}
+
 const ERC20_ABI = ['function balanceOf(address) view returns (uint256)',
                    'function decimals() view returns (uint8)',
                    'function symbol() view returns (string)'];
@@ -103,8 +123,18 @@ async function main() {
   )];
 
   const latest = await provider.getBlockNumber();
+
+  // START_BLOCK 미지정(0)이면 토큰 생성 블록 자동 탐지
+  let startBlock = START_BLOCK;
+  if (!startBlock) {
+    process.stdout.write('토큰 생성 블록 자동 탐지 중... ');
+    const created = await findCreationBlock(latest);
+    if (created) { startBlock = created; console.log(`발견: ${created}`); }
+    else console.log('실패 → 0부터 스캔(느릴 수 있음). 가능하면 .env 에 TRACE_START_BLOCK 지정 권장');
+  }
+
   console.log(`시드 지갑 ${seeds.length}개, 토큰 ${TOKEN}`);
-  console.log(`스캔 범위 블록 ${START_BLOCK} ~ ${latest}, 최대 깊이 ${MAX_DEPTH}, RPC ${RPC_URL}\n`);
+  console.log(`스캔 범위 블록 ${startBlock} ~ ${latest}, 최대 깊이 ${MAX_DEPTH}, RPC ${RPC_URL}\n`);
 
   let decimals = 18, symbol = 'TOKEN';
   try { decimals = Number(await token.decimals()); symbol = await token.symbol(); } catch {}
@@ -122,7 +152,7 @@ async function main() {
     toScan.forEach((a) => visited.add(a));
     console.log(`[깊이 ${depth}] 지갑 ${toScan.length}개 outgoing 스캔...`);
 
-    const logs = await scanOutgoing(toScan, START_BLOCK, latest);
+    const logs = await scanOutgoing(toScan, startBlock, latest);
     const next = new Set();
 
     for (const log of logs) {
