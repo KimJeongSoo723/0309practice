@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "check": "node src/check.js",
-    "snipe": "node src/snipe.js"
+    "snipe": "node src/snipe.js",
+    "trace": "node src/trace.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
