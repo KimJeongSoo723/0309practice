@@ -48,12 +48,28 @@ async function fetchTokenTx(address) {
     const url = `${API_BASE}?chainid=${CHAIN_ID}&module=account&action=tokentx`
       + `&contractaddress=${TOKEN}&address=${address}`
       + `&startblock=${startblock}&endblock=999999999&page=1&offset=${offset}&sort=asc&apikey=${API_KEY}`;
-    const res = await fetch(url);
-    const json = await res.json();
-    await sleep(220); // 무료 키 rate limit (≈5 req/s) 여유
+
+    // rate limit 등 일시적 에러는 백오프 후 재시도
+    let json;
+    for (let attempt = 1; ; attempt++) {
+      const res = await fetch(url);
+      json = await res.json();
+      await sleep(260); // 무료 키 5 req/s 제한 여유
+      const msg = `${json.message || ''} ${typeof json.result === 'string' ? json.result : ''}`.toLowerCase();
+      const rateLimited = msg.includes('rate limit') || msg.includes('max calls');
+      if (rateLimited && attempt <= 5) {
+        const wait = 1000 * attempt;
+        console.warn(`  · rate limit, ${wait}ms 대기 후 재시도 (${attempt}/5)`);
+        await sleep(wait);
+        continue;
+      }
+      break;
+    }
+
     if (json.status === '0' && json.message === 'No transactions found') break;
     if (!Array.isArray(json.result)) {
-      console.warn(`  ! API 응답 이상 (${address}):`, json.message || json.result);
+      // 전체 응답을 그대로 보여줘서 원인(키/제한 등)을 알 수 있게 함
+      console.warn(`  ! API 응답 이상 (${address}): status=${json.status} message=${JSON.stringify(json.message)} result=${JSON.stringify(json.result)}`);
       break;
     }
     out.push(...json.result);
