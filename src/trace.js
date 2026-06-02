@@ -28,7 +28,7 @@ const TOKEN       = (process.env.TRACE_TOKEN || '').toLowerCase();
 const MAX_DEPTH   = Number(process.env.TRACE_MAX_DEPTH ?? 3);
 const MIN_VALUE   = Number(process.env.TRACE_MIN_VALUE ?? 0);
 const START_BLOCK = Number(process.env.TRACE_START_BLOCK ?? 0);
-let   CHUNK       = Number(process.env.TRACE_CHUNK ?? 50000);
+let   CHUNK       = Number(process.env.TRACE_CHUNK ?? 10000);
 
 // Transfer(address indexed from, address indexed to, uint256 value)
 const TRANSFER_TOPIC = ethers.id('Transfer(address,address,uint256)');
@@ -60,16 +60,17 @@ async function scanOutgoing(addresses, fromBlock, toBlock) {
       start = end + 1;
       await sleep(80);
     } catch (e) {
-      const msg = (e.info?.error?.message || e.shortMessage || e.message || '').toLowerCase();
-      // 블록 범위/결과수 초과 → 청크 절반으로 줄여 재시도
-      if ((msg.includes('limit') || msg.includes('range') || msg.includes('large') ||
-           msg.includes('exceed') || msg.includes('-32005') || msg.includes('many')) && CHUNK > 500) {
-        CHUNK = Math.max(500, Math.floor(CHUNK / 2));
-        process.stdout.write(`\n    · 청크 축소 -> ${CHUNK} 블록 후 재시도\n`);
+      const detail = e.info?.error?.message || e.error?.message || e.shortMessage || e.message || '';
+      // 청크가 floor 보다 크면 무조건 절반으로 줄여 재시도(대부분 블록 범위 제한이 원인)
+      if (CHUNK > 1000) {
+        CHUNK = Math.max(1000, Math.floor(CHUNK / 2));
+        process.stdout.write(`\n    · getLogs 거부(${detail || 'unknown'}) -> 청크 축소 ${CHUNK} 블록 재시도\n`);
         continue;
       }
-      console.warn(`\n    ! getLogs 실패 ${start}~${end}: ${msg}. 1.5s 후 재시도`);
-      await sleep(1500);
+      // 이미 작은 청크인데도 실패 → rate limit/일시 장애로 보고 대기 후 재시도
+      console.warn(`\n    ! getLogs 실패 ${start}~${end} (청크 ${CHUNK}): ${detail || 'unknown'}`);
+      if (e.info) console.warn(`      detail: ${JSON.stringify(e.info).slice(0, 300)}`);
+      await sleep(2000);
     }
   }
   process.stdout.write('\n');
