@@ -1,18 +1,17 @@
-// 토큰 분배 추적기 (BSC)
-// 시드 지갑들에서 시작해 특정 토큰의 Transfer 를 BFS 로 따라가며
+// 토큰 분배 추적기 (BSC) — RPC 전용, API 키 불필요
+// 시드 지갑들에서 시작해 특정 토큰의 Transfer 이벤트를 BFS 로 따라가며
 // 자금이 흘러간 일반 지갑(EOA) 들을 찾고, 지금도 보유 중인 곳을 표시합니다.
 //
-// 데이터 소스:
-//   - 전송 이력 : Etherscan V2 통합 API (chainid=56, BscScan), 무료 키
-//   - 컨트랙트 판별 / 현재 잔액 : BSC RPC (HTTP)
+// 데이터 소스: BSC 공개 RPC 의 eth_getLogs (Transfer 이벤트). 무료, 키 불필요.
 //
 // 사용법:
 //   .env 에 아래 설정 후  ->  node src/trace.js
-//     ETHERSCAN_API_KEY=...        (https://etherscan.io/myapikey 무료)
-//     BSC_HTTP_URL=https://bsc-dataseed.binance.org
+//     BSC_HTTP_URL=https://bsc-rpc.publicnode.com   (eth_getLogs 잘 되는 노드 권장)
 //     TRACE_TOKEN=0xF39e4b21c84e737Df08e2C3b32541d856f508E48
-//     TRACE_MAX_DEPTH=3            (시드에서 몇 홉까지 따라갈지)
-//     TRACE_MIN_VALUE=0           (이 값 미만 전송은 노이즈로 무시, 토큰 단위)
+//     TRACE_MAX_DEPTH=3          (시드에서 몇 홉까지 따라갈지)
+//     TRACE_MIN_VALUE=0          (이 값 미만 전송은 노이즈로 무시, 토큰 단위)
+//     TRACE_START_BLOCK=0        (토큰 생성 블록을 넣으면 훨씬 빠름. 모르면 0)
+//     TRACE_CHUNK=50000          (한 번에 스캔할 블록 수. 노드가 거부하면 자동 축소)
 //   시드 지갑은 src/seeds.txt 에 한 줄에 하나씩.
 
 import 'dotenv/config';
@@ -24,68 +23,57 @@ import { lookupKnown } from './known-addresses.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const API_KEY   = process.env.ETHERSCAN_API_KEY;
-const RPC_URL   = process.env.BSC_HTTP_URL || 'https://bsc-dataseed.binance.org';
-const TOKEN     = (process.env.TRACE_TOKEN || '').toLowerCase();
-const MAX_DEPTH = Number(process.env.TRACE_MAX_DEPTH ?? 3);
-const MIN_VALUE = Number(process.env.TRACE_MIN_VALUE ?? 0);
-const API_BASE  = 'https://api.etherscan.io/v2/api';
-const CHAIN_ID  = 56;
+const RPC_URL     = process.env.BSC_HTTP_URL || 'https://bsc-rpc.publicnode.com';
+const TOKEN       = (process.env.TRACE_TOKEN || '').toLowerCase();
+const MAX_DEPTH   = Number(process.env.TRACE_MAX_DEPTH ?? 3);
+const MIN_VALUE   = Number(process.env.TRACE_MIN_VALUE ?? 0);
+const START_BLOCK = Number(process.env.TRACE_START_BLOCK ?? 0);
+let   CHUNK       = Number(process.env.TRACE_CHUNK ?? 50000);
 
-if (!API_KEY) { console.error('ETHERSCAN_API_KEY 가 필요합니다 (.env).'); process.exit(1); }
+// Transfer(address indexed from, address indexed to, uint256 value)
+const TRANSFER_TOPIC = ethers.id('Transfer(address,address,uint256)');
+
 if (!ethers.isAddress(TOKEN)) { console.error('TRACE_TOKEN 주소가 올바르지 않습니다.'); process.exit(1); }
 
 const provider = new ethers.JsonRpcProvider(RPC_URL);
-
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const topicAddr = (a) => ethers.zeroPadValue(ethers.getAddress(a), 32);
+const fromTopic = (t) => ('0x' + t.slice(26)).toLowerCase();
 
-// --- Etherscan V2: 특정 주소의 특정 토큰 전송 이력 전부 가져오기 (블록 윈도잉) ---
-async function fetchTokenTx(address) {
-  const out = [];
-  let startblock = 0;
-  const offset = 10000;
-  for (;;) {
-    const url = `${API_BASE}?chainid=${CHAIN_ID}&module=account&action=tokentx`
-      + `&contractaddress=${TOKEN}&address=${address}`
-      + `&startblock=${startblock}&endblock=999999999&page=1&offset=${offset}&sort=asc&apikey=${API_KEY}`;
-
-    // rate limit 등 일시적 에러는 백오프 후 재시도
-    let json;
-    for (let attempt = 1; ; attempt++) {
-      const res = await fetch(url);
-      json = await res.json();
-      await sleep(260); // 무료 키 5 req/s 제한 여유
-      const msg = `${json.message || ''} ${typeof json.result === 'string' ? json.result : ''}`.toLowerCase();
-      const rateLimited = msg.includes('rate limit') || msg.includes('max calls');
-      if (rateLimited && attempt <= 5) {
-        const wait = 1000 * attempt;
-        console.warn(`  · rate limit, ${wait}ms 대기 후 재시도 (${attempt}/5)`);
-        await sleep(wait);
+// --- 주어진 주소들에서 "나간" Transfer 로그를 fromBlock~toBlock 전 구간 스캔 ---
+// topic1(=from) 에 주소 배열을 넣어 한 번에 여러 지갑의 outgoing 을 가져옴.
+async function scanOutgoing(addresses, fromBlock, toBlock) {
+  const fromTopics = addresses.map(topicAddr); // OR 매칭
+  const logs = [];
+  let start = fromBlock;
+  while (start <= toBlock) {
+    let end = Math.min(start + CHUNK - 1, toBlock);
+    try {
+      const got = await provider.getLogs({
+        address: TOKEN,
+        topics: [TRANSFER_TOPIC, fromTopics],
+        fromBlock: start,
+        toBlock: end,
+      });
+      logs.push(...got);
+      process.stdout.write(`\r    스캔 ${start}~${end} (누적 로그 ${logs.length})   `);
+      start = end + 1;
+      await sleep(80);
+    } catch (e) {
+      const msg = (e.info?.error?.message || e.shortMessage || e.message || '').toLowerCase();
+      // 블록 범위/결과수 초과 → 청크 절반으로 줄여 재시도
+      if ((msg.includes('limit') || msg.includes('range') || msg.includes('large') ||
+           msg.includes('exceed') || msg.includes('-32005') || msg.includes('many')) && CHUNK > 500) {
+        CHUNK = Math.max(500, Math.floor(CHUNK / 2));
+        process.stdout.write(`\n    · 청크 축소 -> ${CHUNK} 블록 후 재시도\n`);
         continue;
       }
-      break;
+      console.warn(`\n    ! getLogs 실패 ${start}~${end}: ${msg}. 1.5s 후 재시도`);
+      await sleep(1500);
     }
-
-    if (json.status === '0' && json.message === 'No transactions found') break;
-    if (!Array.isArray(json.result)) {
-      // 전체 응답을 그대로 보여줘서 원인(키/제한 등)을 알 수 있게 함
-      console.warn(`  ! API 응답 이상 (${address}): status=${json.status} message=${JSON.stringify(json.message)} result=${JSON.stringify(json.result)}`);
-      break;
-    }
-    out.push(...json.result);
-    if (json.result.length < offset) break;
-    // 다음 윈도우: 마지막 블록부터 (중복은 뒤에서 dedupe)
-    const lastBlock = Number(json.result[json.result.length - 1].blockNumber);
-    if (lastBlock === startblock) break;
-    startblock = lastBlock;
   }
-  // tx 해시+logindex 로 dedupe
-  const seen = new Set();
-  return out.filter((t) => {
-    const k = `${t.hash}:${t.from}:${t.to}:${t.value}`;
-    if (seen.has(k)) return false;
-    seen.add(k); return true;
-  });
+  process.stdout.write('\n');
+  return logs;
 }
 
 const codeCache = new Map();
@@ -112,7 +100,10 @@ async function main() {
       .map((s) => s.trim().toLowerCase())
       .filter((s) => ethers.isAddress(s))
   )];
-  console.log(`시드 지갑 ${seeds.length}개, 토큰 ${TOKEN}, 최대 깊이 ${MAX_DEPTH}\n`);
+
+  const latest = await provider.getBlockNumber();
+  console.log(`시드 지갑 ${seeds.length}개, 토큰 ${TOKEN}`);
+  console.log(`스캔 범위 블록 ${START_BLOCK} ~ ${latest}, 최대 깊이 ${MAX_DEPTH}, RPC ${RPC_URL}\n`);
 
   let decimals = 18, symbol = 'TOKEN';
   try { decimals = Number(await token.decimals()); symbol = await token.symbol(); } catch {}
@@ -120,44 +111,40 @@ async function main() {
 
   const edges = [];                 // {from,to,value,hash,depth,toType,toLabel}
   const nodeType = new Map();       // addr -> 'SEED'|'WALLET'|'CEX'|'ROUTER'|'BRIDGE'|'BURN'|'CONTRACT'
-  const visited = new Set();        // outgoing 을 이미 조회한 지갑
+  const visited = new Set();        // outgoing 을 이미 스캔한 지갑
   seeds.forEach((s) => nodeType.set(s, 'SEED'));
 
-  // BFS
-  let frontier = seeds.map((a) => ({ addr: a, depth: 0 }));
-  while (frontier.length) {
-    const next = [];
-    for (const { addr, depth } of frontier) {
-      if (visited.has(addr)) continue;
-      visited.add(addr);
-      process.stdout.write(`[d${depth}] ${addr} ... `);
-      const txs = await fetchTokenTx(addr);
-      const outgoing = txs.filter((t) => t.from.toLowerCase() === addr);
-      console.log(`outgoing ${outgoing.length}건`);
+  let frontier = [...seeds];
+  for (let depth = 0; depth <= MAX_DEPTH && frontier.length; depth++) {
+    const toScan = frontier.filter((a) => !visited.has(a));
+    if (!toScan.length) break;
+    toScan.forEach((a) => visited.add(a));
+    console.log(`[깊이 ${depth}] 지갑 ${toScan.length}개 outgoing 스캔...`);
 
-      for (const t of outgoing) {
-        const to = t.to.toLowerCase();
-        const val = toUnit(t.value);
-        if (val < MIN_VALUE) continue;
+    const logs = await scanOutgoing(toScan, START_BLOCK, latest);
+    const next = new Set();
 
-        // 종착지 분류
-        let type, label = '';
-        const known = lookupKnown(to);
-        if (known) { type = known.type; label = known.label; }
-        else if (!nodeType.has(to) || nodeType.get(to) === 'WALLET') {
-          type = (await isContract(to)) ? 'CONTRACT' : 'WALLET';
-        } else type = nodeType.get(to);
+    for (const log of logs) {
+      const from = fromTopic(log.topics[1]);
+      const to   = fromTopic(log.topics[2]);
+      const val  = toUnit(BigInt(log.data));
+      if (val < MIN_VALUE) continue;
 
-        if (!nodeType.has(to) || nodeType.get(to) === 'WALLET') nodeType.set(to, type);
-        edges.push({ from: addr, to, value: val, hash: t.hash, depth, toType: type, toLabel: label });
+      // 종착지 분류
+      let type, label = '';
+      const known = lookupKnown(to);
+      if (known) { type = known.type; label = known.label; }
+      else if (!nodeType.has(to) || nodeType.get(to) === 'WALLET') {
+        type = (await isContract(to)) ? 'CONTRACT' : 'WALLET';
+      } else type = nodeType.get(to);
 
-        // 일반 지갑이면 다음 홉으로 (CEX/컨트랙트/소각은 종료)
-        if (type === 'WALLET' && depth < MAX_DEPTH && !visited.has(to)) {
-          next.push({ addr: to, depth: depth + 1 });
-        }
-      }
+      if (!nodeType.has(to) || nodeType.get(to) === 'WALLET') nodeType.set(to, type);
+      edges.push({ from, to, value: val, hash: log.transactionHash, depth, toType: type, toLabel: label });
+
+      // 일반 지갑이면 다음 홉으로 (CEX/컨트랙트/소각은 종료)
+      if (type === 'WALLET' && depth < MAX_DEPTH && !visited.has(to)) next.add(to);
     }
-    frontier = next;
+    frontier = [...next];
   }
 
   // 현재 잔액 조회 — 발견된 모든 일반 지갑(+시드)
@@ -170,7 +157,7 @@ async function main() {
     let bal = 0;
     try { bal = toUnit(await token.balanceOf(w)); } catch {}
     if (bal > 0) holders.push({ address: w, balance: bal, type: nodeType.get(w) });
-    await sleep(60);
+    await sleep(50);
   }
   holders.sort((a, b) => b.balance - a.balance);
 
@@ -187,11 +174,11 @@ async function main() {
     JSON.stringify([...nodeType.entries()].map(([a, t]) => ({ address: a, type: t })), null, 2));
 
   console.log(`\n===== 요약 (${symbol}) =====`);
-  console.log(`전송 엣지       : ${edges.length}`);
+  console.log(`전송 엣지        : ${edges.length}`);
   console.log(`발견한 노드 총수 : ${nodeType.size}`);
   const byType = {};
   for (const t of nodeType.values()) byType[t] = (byType[t] || 0) + 1;
-  console.log('종류별 노드     :', byType);
+  console.log('종류별 노드      :', byType);
   console.log(`\n--- 현재 토큰 보유 지갑 (출처=시드, 온체인 잔존) : ${holders.length}곳 ---`);
   for (const h of holders.slice(0, 50)) {
     console.log(`  ${h.address}  ${h.balance.toLocaleString()} ${symbol}  (${h.type})`);
