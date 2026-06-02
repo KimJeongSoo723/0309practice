@@ -2,9 +2,10 @@
 // 시드 지갑들에서 시작해 특정 토큰의 Transfer 를 BFS 로 따라가며
 // 자금이 흘러간 일반 지갑(EOA) 들을 찾고, 지금도 보유 중인 곳을 표시합니다.
 //
-// 데이터 소스: 무료 5종을 순서대로 시도(앞이 실패하면 자동 전환). src/providers.js 참고.
-//   1) Routescan(무료)  2) RPC publicnode  3) RPC dRPC  4) RPC LlamaRPC  5) RPC dataseed
-//   (.env 에 ETHERSCAN_API_KEY 가 있으면 유료 Etherscan 을 0순위로 맨 앞에 추가)
+// 데이터 소스 (src/providers.js):
+//   - ETHERSCAN_API_KEY 있으면  → 유료 Etherscan 단독 (다른 소스로 폴백 안 함)
+//   - 키 없으면               → 무료 5종 순서대로 폴백
+//     1) Routescan  2) RPC publicnode  3) RPC dRPC  4) RPC LlamaRPC  5) RPC dataseed
 //
 // 사용법: .env 에 아래 설정 후  ->  node src/trace.js
 //     TRACE_TOKEN=0xF39e4b21c84e737Df08e2C3b32541d856f508E48

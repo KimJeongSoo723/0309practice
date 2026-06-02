@@ -189,17 +189,23 @@ export class Pool {
   }
 }
 
-// 기본 무료 소스 5종 (+ 유료 Etherscan 키가 있으면 맨 앞에 추가)
+// 풀 구성.
+//   - 유료 Etherscan 키가 있으면 → Etherscan 단독 사용(다른 소스로 폴백하지 않음).
+//   - 키가 없으면 → 무료 5종을 순서대로 폴백.
 export function buildDefaultPool({ apiKey = '', rps = 5, startBlock = 0 } = {}) {
   const gapMs = Math.ceil(1000 / Math.max(1, rps)) + 20;
-  const providers = [];
   if (apiKey) {
-    providers.push(scanProvider({ name: 'Etherscan(키)', baseUrl: 'https://api.etherscan.io/v2/api', apiKey, gapMs }));
+    // 유료 단독 모드
+    return new Pool([
+      scanProvider({ name: 'Etherscan(유료,단독)', baseUrl: 'https://api.etherscan.io/v2/api', apiKey, gapMs }),
+    ]);
   }
-  providers.push(scanProvider({ name: 'Routescan(무료)', baseUrl: 'https://api.routescan.io/v2/network/mainnet/evm/56/etherscan/api', gapMs }));
-  providers.push(rpcProvider({ name: 'RPC publicnode', url: 'https://bsc-rpc.publicnode.com', startBlock }));
-  providers.push(rpcProvider({ name: 'RPC dRPC',       url: 'https://bsc.drpc.org', startBlock }));
-  providers.push(rpcProvider({ name: 'RPC LlamaRPC',   url: 'https://binance.llamarpc.com', startBlock }));
-  providers.push(rpcProvider({ name: 'RPC dataseed',   url: 'https://bsc-dataseed1.bnbchain.org', startBlock }));
-  return new Pool(providers);
+  // 무료 폴백 모드
+  return new Pool([
+    scanProvider({ name: 'Routescan(무료)', baseUrl: 'https://api.routescan.io/v2/network/mainnet/evm/56/etherscan/api', gapMs }),
+    rpcProvider({ name: 'RPC publicnode', url: 'https://bsc-rpc.publicnode.com', startBlock }),
+    rpcProvider({ name: 'RPC dRPC',       url: 'https://bsc.drpc.org', startBlock }),
+    rpcProvider({ name: 'RPC LlamaRPC',   url: 'https://binance.llamarpc.com', startBlock }),
+    rpcProvider({ name: 'RPC dataseed',   url: 'https://bsc-dataseed1.bnbchain.org', startBlock }),
+  ]);
 }
