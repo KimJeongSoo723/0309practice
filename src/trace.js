@@ -1,17 +1,19 @@
-// 토큰 분배 추적기 (BSC) — Etherscan V2 API 전용
+// 토큰 분배 추적기 (BSC) — Etherscan 호환 API
 // 시드 지갑들에서 시작해 특정 토큰의 Transfer 를 BFS 로 따라가며
 // 자금이 흘러간 일반 지갑(EOA) 들을 찾고, 지금도 보유 중인 곳을 표시합니다.
 //
-// 데이터 소스: Etherscan V2 통합 API (chainid=56 = BSC).
-//   ※ BSC 는 유료 플랜에서만 지원됩니다 (무료 키는 "Free API access is not supported").
-//   전송이력 / 컨트랙트판별 / 현재잔액 모두 이 API 로 처리 — 별도 RPC 불필요.
+// 데이터 소스(기본): Routescan — Etherscan 과 동일한 응답 형식을 BSC 에 대해
+//   무료·키 없이 제공합니다. 전송이력/컨트랙트판별/현재잔액 모두 처리 — RPC 불필요.
+//   (Etherscan 유료 키를 쓰려면 .env 에 TRACE_API_BASE 와 ETHERSCAN_API_KEY 지정)
 //
 // 사용법: .env 에 아래 설정 후  ->  node src/trace.js
-//     ETHERSCAN_API_KEY=...      (유료 플랜 키)
 //     TRACE_TOKEN=0xF39e4b21c84e737Df08e2C3b32541d856f508E48
 //     TRACE_MAX_DEPTH=3          (시드에서 몇 홉까지 따라갈지)
 //     TRACE_MIN_VALUE=0          (이 값 미만 전송은 노이즈로 무시, 토큰 단위)
-//     TRACE_RPS=5                (초당 API 호출 수. 플랜 등급에 맞춰. 기본 5)
+//     TRACE_RPS=4                (초당 API 호출 수. 무료는 낮게. 기본 4)
+//     # (선택) Etherscan 유료로 바꾸려면:
+//     # TRACE_API_BASE=https://api.etherscan.io/v2/api
+//     # ETHERSCAN_API_KEY=유료키
 //   시드 지갑은 src/seeds.txt 에 한 줄에 하나씩.
 
 import 'dotenv/config';
@@ -23,24 +25,25 @@ import { lookupKnown } from './known-addresses.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const API_KEY   = process.env.ETHERSCAN_API_KEY;
+const API_KEY   = process.env.ETHERSCAN_API_KEY || '';
 const TOKEN     = (process.env.TRACE_TOKEN || '').toLowerCase();
 const MAX_DEPTH = Number(process.env.TRACE_MAX_DEPTH ?? 3);
 const MIN_VALUE = Number(process.env.TRACE_MIN_VALUE ?? 0);
-const RPS       = Number(process.env.TRACE_RPS ?? 5);
-const API_BASE  = 'https://api.etherscan.io/v2/api';
+const RPS       = Number(process.env.TRACE_RPS ?? 4);
+// 기본: Routescan 의 Etherscan 호환 무료 엔드포인트 (BSC = chain 56)
+const API_BASE  = process.env.TRACE_API_BASE || 'https://api.routescan.io/v2/network/mainnet/evm/56/etherscan/api';
 const CHAIN_ID  = 56;
 const GAP_MS    = Math.ceil(1000 / Math.max(1, RPS)) + 20; // 호출 간 최소 간격
 
-if (!API_KEY) { console.error('ETHERSCAN_API_KEY 가 필요합니다 (.env).'); process.exit(1); }
 if (!ethers.isAddress(TOKEN)) { console.error('TRACE_TOKEN 주소가 올바르지 않습니다.'); process.exit(1); }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// --- Etherscan V2 호출 (rate limit 자동 재시도 + 에러 그대로 노출) ---
+// --- Etherscan 호환 호출 (rate limit 자동 재시도 + 에러 그대로 노출) ---
 async function api(params) {
-  const qs = new URLSearchParams({ chainid: String(CHAIN_ID), apikey: API_KEY, ...params });
-  const url = `${API_BASE}?${qs}`;
+  const base = { module: '', action: '', ...params, chainid: String(CHAIN_ID) };
+  if (API_KEY) base.apikey = API_KEY;       // 키 있으면 첨부(없어도 Routescan 동작)
+  const url = `${API_BASE}?${new URLSearchParams(base)}`;
   for (let attempt = 1; ; attempt++) {
     let json;
     try {
@@ -53,13 +56,13 @@ async function api(params) {
     await sleep(GAP_MS);
     const resultStr = typeof json.result === 'string' ? json.result : '';
     const low = `${json.message || ''} ${resultStr}`.toLowerCase();
-    if ((low.includes('rate limit') || low.includes('max calls')) && attempt <= 6) {
+    if ((low.includes('rate limit') || low.includes('max calls') || low.includes('too many')) && attempt <= 6) {
       await sleep(1000 * attempt);
       continue;
     }
-    // 유료 미적용 등 치명적 오류는 즉시 알림
+    // 무료 미지원 등 치명적 오류는 즉시 알림
     if (low.includes('not supported for this chain')) {
-      console.error(`\n[치명] ${resultStr}\n→ 이 키는 BSC 미지원입니다. 유료 플랜 적용/전파를 확인하세요.`);
+      console.error(`\n[치명] ${resultStr}\n→ 이 엔드포인트/키는 BSC 미지원입니다. TRACE_API_BASE 를 확인하세요.`);
       process.exit(1);
     }
     return json;
@@ -120,7 +123,8 @@ async function main() {
       .map((s) => s.trim().toLowerCase())
       .filter((s) => ethers.isAddress(s))
   )];
-  console.log(`시드 지갑 ${seeds.length}개, 토큰 ${TOKEN}, 최대 깊이 ${MAX_DEPTH}, ${RPS} req/s\n`);
+  console.log(`시드 지갑 ${seeds.length}개, 토큰 ${TOKEN}, 최대 깊이 ${MAX_DEPTH}, ${RPS} req/s`);
+  console.log(`데이터 소스: ${API_BASE}${API_KEY ? ' (키 사용)' : ' (키 없음/무료)'}\n`);
 
   let decimals = 18, symbol = 'TOKEN';
   const toUnit = (raw) => Number(ethers.formatUnits(raw, decimals));
