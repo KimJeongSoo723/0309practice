@@ -1,18 +1,18 @@
-// 토큰 분배 추적기 (BSC) — Etherscan 호환 API
+// 토큰 분배 추적기 (BSC)
 // 시드 지갑들에서 시작해 특정 토큰의 Transfer 를 BFS 로 따라가며
 // 자금이 흘러간 일반 지갑(EOA) 들을 찾고, 지금도 보유 중인 곳을 표시합니다.
 //
-// 데이터 소스(기본): Etherscan V2 통합 API (chainid=56 = BSC). BSC 는 유료 플랜 필요.
-//   전송이력/컨트랙트판별/현재잔액 모두 이 API 로 처리 — 별도 RPC 불필요.
+// 데이터 소스: 무료 5종을 순서대로 시도(앞이 실패하면 자동 전환). src/providers.js 참고.
+//   1) Routescan(무료)  2) RPC publicnode  3) RPC dRPC  4) RPC LlamaRPC  5) RPC dataseed
+//   (.env 에 ETHERSCAN_API_KEY 가 있으면 유료 Etherscan 을 0순위로 맨 앞에 추가)
 //
 // 사용법: .env 에 아래 설정 후  ->  node src/trace.js
-//     ETHERSCAN_API_KEY=유료키
 //     TRACE_TOKEN=0xF39e4b21c84e737Df08e2C3b32541d856f508E48
 //     TRACE_MAX_DEPTH=3          (시드에서 몇 홉까지 따라갈지)
 //     TRACE_MIN_VALUE=0          (이 값 미만 전송은 노이즈로 무시, 토큰 단위)
-//     TRACE_RPS=5                (초당 API 호출 수. 플랜 등급에 맞춰. 기본 5)
-//     # (선택) 무료 Routescan 으로 바꾸려면 키 없이:
-//     # TRACE_API_BASE=https://api.routescan.io/v2/network/mainnet/evm/56/etherscan/api
+//     TRACE_RPS=5                (scan API 초당 호출 수)
+//     TRACE_START_BLOCK=0        (RPC 폴백 사용 시 시작 블록. 알면 넣으면 훨씬 빠름)
+//     # ETHERSCAN_API_KEY=...    (선택, 유료 키 있으면 0순위)
 //   시드 지갑은 src/seeds.txt 에 한 줄에 하나씩.
 
 import 'dotenv/config';
@@ -21,104 +21,20 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
 import { lookupKnown } from './known-addresses.js';
+import { buildDefaultPool } from './providers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const API_KEY   = process.env.ETHERSCAN_API_KEY || '';
-const TOKEN     = (process.env.TRACE_TOKEN || '').toLowerCase();
-const MAX_DEPTH = Number(process.env.TRACE_MAX_DEPTH ?? 3);
-const MIN_VALUE = Number(process.env.TRACE_MIN_VALUE ?? 0);
-const RPS       = Number(process.env.TRACE_RPS ?? 5);
-// 기본: Etherscan V2 통합 API (chainid=56 = BSC). BSC 는 유료 플랜 필요.
-// 무료로 쓰려면 .env 에 TRACE_API_BASE=https://api.routescan.io/v2/network/mainnet/evm/56/etherscan/api
-const API_BASE  = process.env.TRACE_API_BASE || 'https://api.etherscan.io/v2/api';
-const CHAIN_ID  = 56;
-const GAP_MS    = Math.ceil(1000 / Math.max(1, RPS)) + 20; // 호출 간 최소 간격
+const API_KEY     = process.env.ETHERSCAN_API_KEY || '';
+const TOKEN       = (process.env.TRACE_TOKEN || '').toLowerCase();
+const MAX_DEPTH   = Number(process.env.TRACE_MAX_DEPTH ?? 3);
+const MIN_VALUE   = Number(process.env.TRACE_MIN_VALUE ?? 0);
+const RPS         = Number(process.env.TRACE_RPS ?? 5);
+const START_BLOCK = Number(process.env.TRACE_START_BLOCK ?? 0);
 
-const USING_ETHERSCAN = API_BASE.includes('etherscan.io');
-if (USING_ETHERSCAN && !API_KEY) {
-  console.error('ETHERSCAN_API_KEY 가 필요합니다 (.env). (BSC 는 유료 플랜)');
-  process.exit(1);
-}
 if (!ethers.isAddress(TOKEN)) { console.error('TRACE_TOKEN 주소가 올바르지 않습니다.'); process.exit(1); }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-// --- Etherscan 호환 호출 (rate limit 자동 재시도 + 에러 그대로 노출) ---
-async function api(params) {
-  const base = { module: '', action: '', ...params, chainid: String(CHAIN_ID) };
-  if (API_KEY) base.apikey = API_KEY;       // 키 있으면 첨부(없어도 Routescan 동작)
-  const url = `${API_BASE}?${new URLSearchParams(base)}`;
-  for (let attempt = 1; ; attempt++) {
-    let json;
-    try {
-      const res = await fetch(url);
-      json = await res.json();
-    } catch (e) {
-      if (attempt <= 5) { await sleep(1000 * attempt); continue; }
-      throw e;
-    }
-    await sleep(GAP_MS);
-    const resultStr = typeof json.result === 'string' ? json.result : '';
-    const low = `${json.message || ''} ${resultStr}`.toLowerCase();
-    if ((low.includes('rate limit') || low.includes('max calls') || low.includes('too many')) && attempt <= 6) {
-      await sleep(1000 * attempt);
-      continue;
-    }
-    // 무료 미지원 등 치명적 오류는 즉시 알림
-    if (low.includes('not supported for this chain')) {
-      console.error(`\n[치명] ${resultStr}\n→ 이 엔드포인트/키는 BSC 미지원입니다. TRACE_API_BASE 를 확인하세요.`);
-      process.exit(1);
-    }
-    return json;
-  }
-}
-
-// 특정 주소의 특정 토큰 전송 이력 전부 (블록 윈도잉 페이지네이션)
-async function fetchTokenTx(address) {
-  const out = [];
-  let startblock = 0;
-  const offset = 10000;
-  for (;;) {
-    const json = await api({
-      module: 'account', action: 'tokentx',
-      contractaddress: TOKEN, address,
-      startblock: String(startblock), endblock: '999999999',
-      page: '1', offset: String(offset), sort: 'asc',
-    });
-    if (json.status === '0' && json.message === 'No transactions found') break;
-    if (!Array.isArray(json.result)) {
-      console.warn(`  ! 응답 이상 (${address}): status=${json.status} message=${JSON.stringify(json.message)} result=${JSON.stringify(json.result)}`);
-      break;
-    }
-    out.push(...json.result);
-    if (json.result.length < offset) break;
-    const lastBlock = Number(json.result[json.result.length - 1].blockNumber);
-    if (lastBlock === startblock) break; // 같은 블록에 10000건 이상이면 무한루프 방지
-    startblock = lastBlock;
-  }
-  const seen = new Set();
-  return out.filter((t) => {
-    const k = `${t.hash}:${t.from}:${t.to}:${t.value}`;
-    if (seen.has(k)) return false;
-    seen.add(k); return true;
-  });
-}
-
-const codeCache = new Map();
-async function isContract(addr) {
-  const a = addr.toLowerCase();
-  if (codeCache.has(a)) return codeCache.get(a);
-  const json = await api({ module: 'proxy', action: 'eth_getCode', address: a, tag: 'latest' });
-  const result = typeof json.result === 'string' && json.result !== '0x' && json.result !== '0x0';
-  codeCache.set(a, result);
-  return result;
-}
-
-async function balanceOf(addr) {
-  const json = await api({ module: 'account', action: 'tokenbalance', contractaddress: TOKEN, address: addr, tag: 'latest' });
-  return typeof json.result === 'string' && /^\d+$/.test(json.result) ? BigInt(json.result) : 0n;
-}
+const pool = buildDefaultPool({ apiKey: API_KEY, rps: RPS, startBlock: START_BLOCK });
 
 async function main() {
   const seedFile = path.join(__dirname, 'seeds.txt');
@@ -128,10 +44,12 @@ async function main() {
       .map((s) => s.trim().toLowerCase())
       .filter((s) => ethers.isAddress(s))
   )];
-  console.log(`시드 지갑 ${seeds.length}개, 토큰 ${TOKEN}, 최대 깊이 ${MAX_DEPTH}, ${RPS} req/s`);
-  console.log(`데이터 소스: ${API_BASE}${API_KEY ? ' (키 사용)' : ' (키 없음/무료)'}\n`);
+  console.log(`시드 지갑 ${seeds.length}개, 토큰 ${TOKEN}, 최대 깊이 ${MAX_DEPTH}`);
+  console.log(`데이터 소스 후보: ${pool.providers.map((p) => p.name).join(' → ')}\n`);
 
   let decimals = 18, symbol = 'TOKEN';
+  const meta = await pool.meta(TOKEN);
+  decimals = meta.decimals; symbol = meta.symbol;
   const toUnit = (raw) => Number(ethers.formatUnits(raw, decimals));
 
   const edges = [];                 // {from,to,value,hash,depth,toType,toLabel}
@@ -147,17 +65,17 @@ async function main() {
 
     for (const addr of toScan) {
       visited.add(addr);
-      process.stdout.write(`[d${depth}] ${addr} ... `);
-      const txs = await fetchTokenTx(addr);
-      if (txs.length && symbol === 'TOKEN') { // 토큰 메타데이터 한 번만 확보
+      process.stdout.write(`[d${depth}] ${addr} `);
+      const txs = await pool.transfers(TOKEN, addr);
+      if (txs.length && symbol === 'TOKEN' && txs[0].tokenDecimal) { // scan 응답이면 메타 보강
         decimals = Number(txs[0].tokenDecimal || 18);
         symbol = txs[0].tokenSymbol || 'TOKEN';
       }
-      const outgoing = txs.filter((t) => t.from.toLowerCase() === addr);
-      console.log(`outgoing ${outgoing.length}건`);
+      const outgoing = txs.filter((t) => t.from === addr);
+      console.log(`[${pool.active().name}] outgoing ${outgoing.length}건`);
 
       for (const t of outgoing) {
-        const to = t.to.toLowerCase();
+        const to = t.to;
         const val = toUnit(t.value);
         if (val < MIN_VALUE) continue;
 
@@ -165,7 +83,7 @@ async function main() {
         const known = lookupKnown(to);
         if (known) { type = known.type; label = known.label; }
         else if (!nodeType.has(to) || nodeType.get(to) === 'WALLET') {
-          type = (await isContract(to)) ? 'CONTRACT' : 'WALLET';
+          type = (await pool.isContract(to)) ? 'CONTRACT' : 'WALLET';
         } else type = nodeType.get(to);
 
         if (!nodeType.has(to) || nodeType.get(to) === 'WALLET') nodeType.set(to, type);
@@ -184,7 +102,7 @@ async function main() {
   console.log(`\n잔액 조회 중 (지갑 ${wallets.length}개)...`);
   const holders = [];
   for (const w of wallets) {
-    const bal = toUnit(await balanceOf(w));
+    const bal = toUnit(await pool.balanceOf(TOKEN, w));
     if (bal > 0) holders.push({ address: w, balance: bal, type: nodeType.get(w) });
   }
   holders.sort((a, b) => b.balance - a.balance);
