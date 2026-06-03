@@ -84,18 +84,19 @@ BSC_HTTP_URL=https://data-seed-prebsc-1-s1.binance.org:8545
 
 # 매도(SELL) 봇 — `npm run sell`
 
-보유한 토큰을 PancakeSwap V2 에서 **USDT 로 50~100 USDT 씩 반복 매도**하는 전략.
+보유한 토큰을 PancakeSwap V2 에서 **0.1~0.2 BNB 씩 네이티브 BNB 로 반복 매도**하는 전략.
 한 번에 다 팔 때 생기는 가격 충격을 피하려고 소액으로 쪼개 매도합니다.
+(경로: `TOKEN → WBNB`, `swapExactTokensForETH`)
 
 ## 동작 방식
 
-1. 매번 `MIN_USDT ~ MAX_USDT` (기본 50~100) 사이 금액을 무작위로 정함
-2. `getAmountsIn` 으로 그 USDT 를 받기 위해 필요한 토큰 수량 계산
+1. 매번 `MIN_BNB ~ MAX_BNB` (기본 0.1~0.2) 사이 금액을 무작위로 정함
+2. `getAmountsIn` 으로 그 BNB 를 받기 위해 필요한 토큰 수량 계산
    (잔액보다 크면 남은 전량 매도)
-3. `getAmountsOut` 으로 실수령 USDT 추정 → `SLIPPAGE_BPS` 만큼 뺀 값을 `amountOutMin` 으로 강제
-4. `swapExactTokensForTokensSupportingFeeOnTransferTokens` 호출 (전송세 토큰 대응)
+3. `getAmountsOut` 으로 실수령 BNB 추정 → `SLIPPAGE_BPS` 만큼 뺀 값을 `amountOutMin` 으로 강제
+4. `swapExactTokensForETHSupportingFeeOnTransferTokens` 호출 (전송세 토큰 대응, 네이티브 BNB 수령)
 5. `INTERVAL_MIN_SECONDS ~ INTERVAL_MAX_SECONDS` 무작위 대기 후 반복
-6. 잔액이 `STOP_BELOW_USDT` 상당 이하이거나 `MAX_SELLS` 도달 시 자동 정지
+6. 보유 토큰 가치가 `STOP_BELOW_BNB` 이하이거나 `MAX_SELLS` 도달 시 자동 정지
 
 > 첫 실행 시 라우터에 매도 권한(`approve`)을 한 번 부여합니다 (DRY_RUN 이면 생략).
 
@@ -122,18 +123,15 @@ npm run sell
 |---|---|
 | `BSC_HTTP_URL` | HTTP RPC 엔드포인트 (매도엔 WSS 불필요) |
 | `TOKEN_TO_SELL` | 매도할 토큰 컨트랙트 주소 |
-| `USDT_ADDRESS` | 받을 스테이블코인. 비우면 메인넷 BSC-USD |
-| `SELL_TO_BNB` | `true` 면 USDT 대신 **네이티브 BNB** 로 받음 (`TOKEN→WBNB`). 규모는 여전히 USDT 기준 |
-| `MIN_USDT` / `MAX_USDT` | 1회 매도 규모(USDT). 기본 50 / 100 |
-| `ROUTE_THROUGH_WBNB` | `true` 면 `TOKEN→WBNB→USDT` 경유 |
+| `MIN_BNB` / `MAX_BNB` | 1회 매도 규모(BNB). 기본 0.1 / 0.2 |
 | `SLIPPAGE_BPS` | 슬리피지 허용치(bps). 200 = 2% |
 | `FEE_ON_TRANSFER` | 전송세 토큰이면 `true` (모르면 `true`) |
 | `INTERVAL_MIN_SECONDS` / `INTERVAL_MAX_SECONDS` | 매도 간격(초) 무작위 범위 |
 | `MAX_SELLS` | 총 매도 횟수 상한. `0` = 무제한 |
-| `STOP_BELOW_USDT` | 잔액이 이 값 상당 이하면 정지 |
+| `STOP_BELOW_BNB` | 보유 가치가 이 값(BNB) 이하면 정지 |
 | `DRY_RUN` | `true` 면 시뮬레이션만 (기본 `true`) |
 
 ## 주의
 
-- `TOKEN/USDT` 직접 풀이 없으면 `ROUTE_THROUGH_WBNB=true` 로 두세요. DRY_RUN 에서 경로가 실패하면 바꿔서 다시 시도하면 됩니다.
+- 받는 대금은 **네이티브 BNB** 입니다 (`TOKEN/WBNB` 풀 사용). 해당 풀에 유동성이 없으면 DRY_RUN 에서 경로 오류가 납니다.
 - 직접 보유한 토큰을 본인 지갑에서 매도하는 용도입니다. 시세조종(워시 트레이딩 등) 목적으로 쓰지 마세요.

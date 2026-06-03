@@ -9,21 +9,9 @@ const provider = new ethers.JsonRpcProvider(config.httpUrl);
 const wallet   = new ethers.Wallet(config.privateKey, provider);
 const router   = new ethers.Contract(PANCAKE_V2_ROUTER, ROUTER_ABI, wallet);
 const token    = new ethers.Contract(config.tokenToSell, ERC20_ABI, wallet);
-const usdt     = new ethers.Contract(config.usdt, ERC20_ABI, provider);
 
-// 매도 규모(50~100 USDT)를 산정하는 가격 경로 — 항상 USDT 로 끝남.
-const PRICE_PATH = config.routeThroughWbnb
-  ? [config.tokenToSell, config.wbnb, config.usdt]
-  : [config.tokenToSell, config.usdt];
-
-// 실제 스왑을 실행하는 경로.
-// - BNB 로 받기: TOKEN -> WBNB (swapExactTokensForETH 가 네이티브 BNB 로 풀어줌)
-// - USDT 로 받기: 가격 경로와 동일
-const SELL_PATH = config.sellToBnb ? [config.tokenToSell, config.wbnb] : PRICE_PATH;
-
-// 받는 자산 표기용.
-const OUT_DECIMALS = config.sellToBnb ? 18 : null; // null 이면 런타임에 USDT decimals 사용
-const OUT_SYMBOL   = config.sellToBnb ? "BNB" : "USDT";
+// 토큰을 팔아 네이티브 BNB 로 받는 경로.
+const PATH = [config.tokenToSell, config.wbnb];
 
 let stopRequested = false;
 process.on("SIGINT", () => {
@@ -34,9 +22,9 @@ process.on("SIGINT", () => {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const rand  = (min, max) => min + Math.random() * (max - min);
 
-// 무작위 USDT 목표액 -> 문자열(소수 2자리). parseUnits 입력용.
-function pickTargetUsdt() {
-  return rand(config.minUsdt, config.maxUsdt).toFixed(2);
+// 무작위 BNB 목표액 -> 문자열(소수 6자리). parseEther 입력용.
+function pickTargetBnb() {
+  return rand(config.minBnb, config.maxBnb).toFixed(6);
 }
 
 async function ensureAllowance() {
@@ -57,16 +45,16 @@ async function ensureAllowance() {
   console.log("approve 완료.\n");
 }
 
-async function sellOnce(tokenDecimals, usdtDecimals, tokenSymbol) {
+async function sellOnce(tokenDecimals, tokenSymbol) {
   const balance = await token.balanceOf(wallet.address);
 
-  // 목표 USDT 액수에 해당하는 토큰 수량 계산.
-  const targetUsdtStr = pickTargetUsdt();
-  const targetUsdtWei = ethers.parseUnits(targetUsdtStr, usdtDecimals);
+  // 목표 BNB 액수에 해당하는 토큰 수량 계산.
+  const targetBnbStr = pickTargetBnb();
+  const targetBnbWei = ethers.parseEther(targetBnbStr);
 
   let amountIn;
   try {
-    const amountsIn = await router.getAmountsIn(targetUsdtWei, PRICE_PATH);
+    const amountsIn = await router.getAmountsIn(targetBnbWei, PATH);
     amountIn = amountsIn[0];
   } catch (err) {
     console.error("getAmountsIn 실패 (유동성/경로 확인):", err.shortMessage ?? err.message);
@@ -75,29 +63,28 @@ async function sellOnce(tokenDecimals, usdtDecimals, tokenSymbol) {
 
   // 잔액보다 많이 필요하면 남은 잔액 전량 매도.
   if (amountIn > balance) {
-    console.log(`목표 ${targetUsdtStr} USDT 에 필요한 토큰이 잔액보다 큼 -> 남은 전량 매도`);
+    console.log(`목표 ${targetBnbStr} BNB 에 필요한 토큰이 잔액보다 큼 -> 남은 전량 매도`);
     amountIn = balance;
   }
   if (amountIn === 0n) return { sold: false, balance };
 
-  // 실제 받게 될 대금(USDT 또는 BNB) 추정 -> 슬리피지 적용해 amountOutMin 산정.
-  const outDecimals = OUT_DECIMALS ?? usdtDecimals;
-  const amountsOut  = await router.getAmountsOut(amountIn, SELL_PATH);
+  // 실제 받게 될 BNB 추정 -> 슬리피지 적용해 amountOutMin 산정.
+  const amountsOut  = await router.getAmountsOut(amountIn, PATH);
   const expectedOut = amountsOut[amountsOut.length - 1];
   const amountOutMin = (expectedOut * (10000n - config.slippageBps)) / 10000n;
 
   const inStr  = ethers.formatUnits(amountIn, tokenDecimals);
-  const outStr = ethers.formatUnits(expectedOut, outDecimals);
-  const minStr = ethers.formatUnits(amountOutMin, outDecimals);
-  console.log(`매도: ${inStr} ${tokenSymbol}  ->  ~${outStr} ${OUT_SYMBOL} (최소 ${minStr})`);
+  const outStr = ethers.formatEther(expectedOut);
+  const minStr = ethers.formatEther(amountOutMin);
+  console.log(`매도: ${inStr} ${tokenSymbol}  ->  ~${outStr} BNB (최소 ${minStr})`);
 
   const deadline  = Math.floor(Date.now() / 1000) + config.deadlineSeconds;
   const gasPrice  = ethers.parseUnits(config.gasPriceGwei, "gwei");
   const overrides = { gasPrice, gasLimit: config.gasLimit };
-  const fn = config.sellToBnb
-    ? (config.feeOnTransfer ? "swapExactTokensForETHSupportingFeeOnTransferTokens" : "swapExactTokensForETH")
-    : (config.feeOnTransfer ? "swapExactTokensForTokensSupportingFeeOnTransferTokens" : "swapExactTokensForTokens");
-  const args = [amountIn, amountOutMin, SELL_PATH, wallet.address, deadline];
+  const fn = config.feeOnTransfer
+    ? "swapExactTokensForETHSupportingFeeOnTransferTokens"
+    : "swapExactTokensForETH";
+  const args = [amountIn, amountOutMin, PATH, wallet.address, deadline];
 
   if (config.dryRun) {
     const data = router.interface.encodeFunctionData(fn, args);
@@ -118,15 +105,13 @@ async function main() {
   console.log("chainId:", net.chainId.toString(), "(BSC mainnet=56, testnet=97)");
   console.log("wallet :", wallet.address);
 
-  const [tokenDecimals, tokenSymbol, usdtDecimals, bnb, balance] = await Promise.all([
+  const [tokenDecimals, tokenSymbol, bnb, balance] = await Promise.all([
     token.decimals(),
     token.symbol().catch(() => "TOKEN"),
-    usdt.decimals(),
     provider.getBalance(wallet.address),
     token.balanceOf(wallet.address)
   ]);
   const td = Number(tokenDecimals);
-  const ud = Number(usdtDecimals);
 
   console.log("BNB(gas):", ethers.formatEther(bnb), "BNB");
   console.log("보유토큰:", ethers.formatUnits(balance, td), tokenSymbol);
@@ -140,21 +125,21 @@ async function main() {
     return;
   }
 
-  // 전체 보유량이 대략 몇 USDT 가치인지 미리 보여줌.
+  // 전체 보유량이 대략 몇 BNB 가치인지 미리 보여줌.
   try {
-    const out = await router.getAmountsOut(balance, PRICE_PATH);
-    console.log("보유 전량 추정가치:", ethers.formatUnits(out[out.length - 1], ud), "USDT\n");
+    const out = await router.getAmountsOut(balance, PATH);
+    console.log("보유 전량 추정가치:", ethers.formatEther(out[out.length - 1]), "BNB\n");
   } catch {
     console.log("(전량 가치 추정 실패 — 경로/유동성 확인 필요)\n");
   }
 
   await ensureAllowance();
 
-  // stopBelowUsdt 를 토큰 수량으로 환산 (대략).
+  // stopBelowBnb 를 토큰 수량으로 환산 (대략).
   let stopBelowTokens = 0n;
   try {
-    const stopWei = ethers.parseUnits(String(config.stopBelowUsdt), ud);
-    const inForStop = await router.getAmountsIn(stopWei, PRICE_PATH);
+    const stopWei = ethers.parseEther(String(config.stopBelowBnb));
+    const inForStop = await router.getAmountsIn(stopWei, PATH);
     stopBelowTokens = inForStop[0];
   } catch { /* 무시 — 잔액 0 까지 */ }
 
@@ -165,7 +150,7 @@ async function main() {
       break;
     }
 
-    const result = await sellOnce(td, ud, tokenSymbol).catch((err) => {
+    const result = await sellOnce(td, tokenSymbol).catch((err) => {
       console.error("매도 실패:", err.shortMessage ?? err.message, "\n");
       return { sold: false, balance: null };
     });
@@ -175,7 +160,7 @@ async function main() {
     // 잔액 소진 체크.
     const live = await token.balanceOf(wallet.address);
     if (live <= stopBelowTokens) {
-      console.log(`잔액이 정지 기준(${config.stopBelowUsdt} USDT 상당) 이하 -> 종료. 총 ${count}회 매도.`);
+      console.log(`잔액이 정지 기준(${config.stopBelowBnb} BNB 상당) 이하 -> 종료. 총 ${count}회 매도.`);
       break;
     }
 

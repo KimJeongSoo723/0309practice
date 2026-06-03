@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { ethers } from "ethers";
-import { NETWORK, WBNB, USDT } from "./addresses.js";
+import { NETWORK, WBNB } from "./addresses.js";
 
 const env = process.env;
 
@@ -10,15 +10,11 @@ for (const k of required) {
   if (!env[k]) throw new Error(`.env 누락: ${k}`);
 }
 
-const usdtAddress = env.USDT_ADDRESS || USDT;
-if (!usdtAddress) {
-  throw new Error(".env 누락: USDT_ADDRESS (이 네트워크엔 기본 USDT 주소가 없습니다)");
-}
-
-const minUsdt = Number(env.MIN_USDT ?? "50");
-const maxUsdt = Number(env.MAX_USDT ?? "100");
-if (!(minUsdt > 0) || !(maxUsdt >= minUsdt)) {
-  throw new Error(`MIN_USDT / MAX_USDT 설정 오류: ${minUsdt} ~ ${maxUsdt}`);
+// 1회 매도 규모를 WBNB(=BNB) 로 지정. 매번 [min, max] 사이에서 무작위 선택.
+const minBnb = Number(env.MIN_BNB ?? "0.1");
+const maxBnb = Number(env.MAX_BNB ?? "0.2");
+if (!(minBnb > 0) || !(maxBnb >= minBnb)) {
+  throw new Error(`MIN_BNB / MAX_BNB 설정 오류: ${minBnb} ~ ${maxBnb}`);
 }
 
 const intervalMin = Number(env.INTERVAL_MIN_SECONDS ?? "30");
@@ -30,19 +26,13 @@ export const config = {
   privateKey: env.PRIVATE_KEY,
 
   tokenToSell: ethers.getAddress(env.TOKEN_TO_SELL),
-  usdt: ethers.getAddress(usdtAddress),
   wbnb: ethers.getAddress(WBNB),
 
-  // 1회 매도 규모 (USDT 상당). 매번 [min, max] 사이에서 무작위 선택.
-  minUsdt,
-  maxUsdt,
-
-  // true 면 매도 대금을 USDT 대신 네이티브 BNB 로 받음 (TOKEN -> WBNB, swapExactTokensForETH).
-  // 매도 규모(50~100)는 그대로 USDT 가치 기준으로 산정.
-  sellToBnb: (env.SELL_TO_BNB ?? "false").toLowerCase() === "true",
-
-  // 가격 산정 경로에서 TOKEN -> WBNB -> USDT 로 경유할지 여부. false 면 TOKEN -> USDT 직접.
-  routeThroughWbnb: (env.ROUTE_THROUGH_WBNB ?? "false").toLowerCase() === "true",
+  // 1회 매도 규모 (BNB). 매번 이 구간에서 무작위. 받는 자산도 네이티브 BNB.
+  minBnb,
+  maxBnb,
+  minBnbStr: String(minBnb),
+  maxBnbStr: String(maxBnb),
 
   // 슬리피지 허용치 (bps). 200 = 2%.
   slippageBps: BigInt(env.SLIPPAGE_BPS ?? "200"),
@@ -57,8 +47,8 @@ export const config = {
   // 총 매도 횟수 상한. 0 이면 무제한(잔액 소진까지).
   maxSells: Number(env.MAX_SELLS ?? "0"),
 
-  // 토큰 잔액이 이 값(USDT 상당) 밑으로 떨어지면 정지.
-  stopBelowUsdt: Number(env.STOP_BELOW_USDT ?? "5"),
+  // 토큰 잔액의 가치가 이 값(BNB) 밑으로 떨어지면 정지.
+  stopBelowBnb: Number(env.STOP_BELOW_BNB ?? "0.01"),
 
   gasPriceGwei: env.GAS_PRICE_GWEI ?? "1",
   gasLimit: BigInt(env.GAS_LIMIT ?? "500000"),
@@ -70,18 +60,14 @@ export function printSellConfig() {
   console.log("=== Sell config ===");
   console.log("network:      ", config.network);
   console.log("tokenToSell:  ", config.tokenToSell);
-  console.log("usdt:         ", config.usdt);
-  console.log("receive:      ", config.sellToBnb ? "BNB (네이티브)" : "USDT");
-  console.log("pricePath:    ", config.routeThroughWbnb ? "TOKEN -> WBNB -> USDT" : "TOKEN -> USDT");
-  console.log("sellPath:     ", config.sellToBnb
-    ? "TOKEN -> WBNB"
-    : (config.routeThroughWbnb ? "TOKEN -> WBNB -> USDT" : "TOKEN -> USDT"));
-  console.log("perSell:      ", `${config.minUsdt} ~ ${config.maxUsdt} USDT`);
+  console.log("receive:      ", "BNB (네이티브)");
+  console.log("path:         ", "TOKEN -> WBNB");
+  console.log("perSell:      ", `${config.minBnbStr} ~ ${config.maxBnbStr} BNB`);
   console.log("slippage:     ", `${Number(config.slippageBps) / 100}%`);
   console.log("feeOnTransfer:", config.feeOnTransfer);
   console.log("interval:     ", `${config.intervalMinSeconds} ~ ${config.intervalMaxSeconds}s`);
   console.log("maxSells:     ", config.maxSells === 0 ? "무제한" : config.maxSells);
-  console.log("stopBelow:    ", `${config.stopBelowUsdt} USDT`);
+  console.log("stopBelow:    ", `${config.stopBelowBnb} BNB`);
   console.log("gasPrice:     ", config.gasPriceGwei, "gwei");
   console.log("dryRun:       ", config.dryRun);
   console.log();
