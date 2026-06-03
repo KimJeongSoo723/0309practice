@@ -7,10 +7,16 @@
     "check": "node src/check.js",
     "snipe": "node src/snipe.js",
     "sell": "node src/sell.js",
-    "diag": "node src/diag.js"
+    "diag": "node src/diag.js",
+    "quote:v4": "node src/quoteV4.js",
+    "sell:v4": "node src/sellV4.js"
   },
   "dependencies": {
+    "@pancakeswap/sdk": "latest",
+    "@pancakeswap/smart-router": "latest",
     "dotenv": "^16.4.5",
-    "ethers": "^6.13.2"
+    "ethers": "^6.13.2",
+    "graphql-request": "^6.1.0",
+    "viem": "^2.21.0"
   }
 }
