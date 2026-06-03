@@ -124,14 +124,7 @@ async function main() {
     console.error("가스용 BNB 가 0 입니다. 종료.");
     return;
   }
-
-  // 전체 보유량이 대략 몇 BNB 가치인지 미리 보여줌.
-  try {
-    const out = await router.getAmountsOut(balance, PATH);
-    console.log("보유 전량 추정가치:", ethers.formatEther(out[out.length - 1]), "BNB\n");
-  } catch {
-    console.log("(전량 가치 추정 실패 — 경로/유동성 확인 필요)\n");
-  }
+  console.log();
 
   await ensureAllowance();
 
