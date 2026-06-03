@@ -5,12 +5,9 @@ export const FACTORY_ABI = [
 export const ROUTER_ABI = [
   "function swapExactETHForTokens(uint256 amountOutMin, address[] calldata path, address to, uint256 deadline) external payable returns (uint256[] memory amounts)",
   "function swapExactETHForTokensSupportingFeeOnTransferTokens(uint256 amountOutMin, address[] calldata path, address to, uint256 deadline) external payable",
-  // --- 매도(token -> USDT)용 ---
+  // --- 매도(token -> BNB)용 ---
   "function getAmountsIn(uint256 amountOut, address[] calldata path) view returns (uint256[] memory amounts)",
   "function getAmountsOut(uint256 amountIn, address[] calldata path) view returns (uint256[] memory amounts)",
-  "function swapExactTokensForTokens(uint256 amountIn, uint256 amountOutMin, address[] calldata path, address to, uint256 deadline) external returns (uint256[] memory amounts)",
-  "function swapExactTokensForTokensSupportingFeeOnTransferTokens(uint256 amountIn, uint256 amountOutMin, address[] calldata path, address to, uint256 deadline) external",
-  // --- 매도(token -> BNB)용 ---
   "function swapExactTokensForETH(uint256 amountIn, uint256 amountOutMin, address[] calldata path, address to, uint256 deadline) external returns (uint256[] memory amounts)",
   "function swapExactTokensForETHSupportingFeeOnTransferTokens(uint256 amountIn, uint256 amountOutMin, address[] calldata path, address to, uint256 deadline) external"
 ];
