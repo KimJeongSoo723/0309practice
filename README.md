@@ -123,6 +123,7 @@ npm run sell
 | `BSC_HTTP_URL` | HTTP RPC 엔드포인트 (매도엔 WSS 불필요) |
 | `TOKEN_TO_SELL` | 매도할 토큰 컨트랙트 주소 |
 | `USDT_ADDRESS` | 받을 스테이블코인. 비우면 메인넷 BSC-USD |
+| `SELL_TO_BNB` | `true` 면 USDT 대신 **네이티브 BNB** 로 받음 (`TOKEN→WBNB`). 규모는 여전히 USDT 기준 |
 | `MIN_USDT` / `MAX_USDT` | 1회 매도 규모(USDT). 기본 50 / 100 |
 | `ROUTE_THROUGH_WBNB` | `true` 면 `TOKEN→WBNB→USDT` 경유 |
 | `SLIPPAGE_BPS` | 슬리피지 허용치(bps). 200 = 2% |

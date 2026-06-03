@@ -37,7 +37,11 @@ export const config = {
   minUsdt,
   maxUsdt,
 
-  // TOKEN -> WBNB -> USDT 로 경유할지 여부. false 면 TOKEN -> USDT 직접 경로.
+  // true 면 매도 대금을 USDT 대신 네이티브 BNB 로 받음 (TOKEN -> WBNB, swapExactTokensForETH).
+  // 매도 규모(50~100)는 그대로 USDT 가치 기준으로 산정.
+  sellToBnb: (env.SELL_TO_BNB ?? "false").toLowerCase() === "true",
+
+  // 가격 산정 경로에서 TOKEN -> WBNB -> USDT 로 경유할지 여부. false 면 TOKEN -> USDT 직접.
   routeThroughWbnb: (env.ROUTE_THROUGH_WBNB ?? "false").toLowerCase() === "true",
 
   // 슬리피지 허용치 (bps). 200 = 2%.
@@ -67,7 +71,11 @@ export function printSellConfig() {
   console.log("network:      ", config.network);
   console.log("tokenToSell:  ", config.tokenToSell);
   console.log("usdt:         ", config.usdt);
-  console.log("path:         ", config.routeThroughWbnb ? "TOKEN -> WBNB -> USDT" : "TOKEN -> USDT");
+  console.log("receive:      ", config.sellToBnb ? "BNB (네이티브)" : "USDT");
+  console.log("pricePath:    ", config.routeThroughWbnb ? "TOKEN -> WBNB -> USDT" : "TOKEN -> USDT");
+  console.log("sellPath:     ", config.sellToBnb
+    ? "TOKEN -> WBNB"
+    : (config.routeThroughWbnb ? "TOKEN -> WBNB -> USDT" : "TOKEN -> USDT"));
   console.log("perSell:      ", `${config.minUsdt} ~ ${config.maxUsdt} USDT`);
   console.log("slippage:     ", `${Number(config.slippageBps) / 100}%`);
   console.log("feeOnTransfer:", config.feeOnTransfer);
