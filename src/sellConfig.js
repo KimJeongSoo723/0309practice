@@ -10,11 +10,10 @@ for (const k of required) {
   if (!env[k]) throw new Error(`.env 누락: ${k}`);
 }
 
-// 1회 매도 규모를 WBNB(=BNB) 로 지정. 매번 [min, max] 사이에서 무작위 선택.
-const minBnb = Number(env.MIN_BNB ?? "0.1");
-const maxBnb = Number(env.MAX_BNB ?? "0.2");
-if (!(minBnb > 0) || !(maxBnb >= minBnb)) {
-  throw new Error(`MIN_BNB / MAX_BNB 설정 오류: ${minBnb} ~ ${maxBnb}`);
+// 시작 시 보유 물량을 몇 등분해서 팔지. 기본 100분할.
+const splitCount = Number(env.SPLIT_COUNT ?? "100");
+if (!Number.isInteger(splitCount) || splitCount < 1) {
+  throw new Error(`SPLIT_COUNT 설정 오류 (1 이상 정수): ${env.SPLIT_COUNT}`);
 }
 
 const intervalMin = Number(env.INTERVAL_MIN_SECONDS ?? "30");
@@ -28,13 +27,10 @@ export const config = {
   tokenToSell: ethers.getAddress(env.TOKEN_TO_SELL),
   wbnb: ethers.getAddress(WBNB),
 
-  // 1회 매도 규모 (BNB). 매번 이 구간에서 무작위. 받는 자산도 네이티브 BNB.
-  minBnb,
-  maxBnb,
-  minBnbStr: String(minBnb),
-  maxBnbStr: String(maxBnb),
+  // 시작 잔액을 splitCount 등분 -> 매 회차 1/splitCount 씩 매도. 받는 자산은 네이티브 BNB.
+  splitCount,
 
-  // 슬리피지 허용치 (bps). 200 = 2%.
+  // 슬리피지 허용치 (bps). 200 = 2%. getAmountsOut 으로 청크 시세 추정 후 적용.
   slippageBps: BigInt(env.SLIPPAGE_BPS ?? "200"),
 
   // fee-on-transfer(전송세) 토큰이면 true. 확실치 않으면 true 가 안전.
@@ -43,12 +39,6 @@ export const config = {
   // 매도 사이 대기 시간 (초). [min, max] 무작위.
   intervalMinSeconds: intervalMin,
   intervalMaxSeconds: Math.max(intervalMin, intervalMax),
-
-  // 총 매도 횟수 상한. 0 이면 무제한(잔액 소진까지).
-  maxSells: Number(env.MAX_SELLS ?? "0"),
-
-  // 토큰 잔액의 가치가 이 값(BNB) 밑으로 떨어지면 정지.
-  stopBelowBnb: Number(env.STOP_BELOW_BNB ?? "0.01"),
 
   gasPriceGwei: env.GAS_PRICE_GWEI ?? "1",
   gasLimit: BigInt(env.GAS_LIMIT ?? "500000"),
@@ -62,12 +52,10 @@ export function printSellConfig() {
   console.log("tokenToSell:  ", config.tokenToSell);
   console.log("receive:      ", "BNB (네이티브)");
   console.log("path:         ", "TOKEN -> WBNB");
-  console.log("perSell:      ", `${config.minBnbStr} ~ ${config.maxBnbStr} BNB`);
+  console.log("strategy:     ", `시작 잔액 ${config.splitCount} 등분 매도`);
   console.log("slippage:     ", `${Number(config.slippageBps) / 100}%`);
   console.log("feeOnTransfer:", config.feeOnTransfer);
   console.log("interval:     ", `${config.intervalMinSeconds} ~ ${config.intervalMaxSeconds}s`);
-  console.log("maxSells:     ", config.maxSells === 0 ? "무제한" : config.maxSells);
-  console.log("stopBelow:    ", `${config.stopBelowBnb} BNB`);
   console.log("gasPrice:     ", config.gasPriceGwei, "gwei");
   console.log("dryRun:       ", config.dryRun);
   console.log();
