@@ -57,7 +57,8 @@ async function sellOnce(tokenDecimals, tokenSymbol) {
     const amountsIn = await router.getAmountsIn(targetBnbWei, PATH);
     amountIn = amountsIn[0];
   } catch (err) {
-    console.error("getAmountsIn 실패 (유동성/경로 확인):", err.shortMessage ?? err.message);
+    console.error(`getAmountsIn 실패 (목표 ${targetBnbStr} BNB, 경로 TOKEN->WBNB):`, err.shortMessage ?? err.message);
+    console.error("  → 원인 진단: `npm run diag` 실행해보세요 (TOKEN/WBNB 풀 존재/유동성 확인).");
     return { sold: false, balance };
   }
 

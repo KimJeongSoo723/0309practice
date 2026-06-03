@@ -1,5 +1,13 @@
 export const FACTORY_ABI = [
-  "event PairCreated(address indexed token0, address indexed token1, address pair, uint256)"
+  "event PairCreated(address indexed token0, address indexed token1, address pair, uint256)",
+  "function getPair(address tokenA, address tokenB) view returns (address pair)"
+];
+
+// 풀 진단용 (reserves/토큰 순서 조회).
+export const PAIR_ABI = [
+  "function getReserves() view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)",
+  "function token0() view returns (address)",
+  "function token1() view returns (address)"
 ];
 
 export const ROUTER_ABI = [
